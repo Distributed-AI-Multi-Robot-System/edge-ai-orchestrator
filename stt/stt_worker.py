@@ -1,16 +1,15 @@
 import multiprocessing
-import queue
 import traceback
 import numpy as np
 import concurrent.futures
 from faster_whisper import WhisperModel
 from silero_vad import load_silero_vad, VADIterator
-import device_type as dt
+from stt.device_type import DeviceType
 
 # --- CONFIG ---
 SAMPLE_RATE = 16000
 VAD_WINDOW_SIZE = 512
-MIN_PIPELINE_DURATION = 3.0 # Sekunden bevor wir "offloaden"
+MIN_PIPELINE_DURATION = 3.0  # Seconds before offloading to background model
 
 class SessionState:
     """Storing the state for a User/Session"""
@@ -23,32 +22,39 @@ class SessionState:
         self.is_recording = False
         self.lang_hint = None
 
-def worker_logic(input_queue, output_queue, device_type=(dt.DeviceType.CUDA)):
+def worker_logic(
+    input_queue, 
+    output_queue, 
+    device_type: DeviceType = DeviceType.CUDA,
+    model_bg_name: str = "base",
+    model_tail_name: str = "tiny"
+):
     device = device_type.value
-    print(f"[Worker] Initialisiere auf {device}...")
+    compute_type = "float16" if device == "cuda" else "int8"
+    print(f"[Worker] Initializing on {device}...")
     
-    # 1. Modelle laden (GPU Speicher wird hier belegt)
-    # Hintergrund-Modell (Genauigkeit)
-    print("[Worker] Lade Background Model (medium)...")
-    model_bg = WhisperModel("medium", device=device, compute_type="float16")
+    # 1. Load models (GPU memory allocated here)
+    # Background model (accuracy)
+    print(f"[Worker] Loading Background Model ({model_bg_name})...")
+    model_bg = WhisperModel(model_bg_name, device=device, compute_type=compute_type)
     
-    # Tail-Modell (Latenz)
-    print("[Worker] Lade Tail Model (tiny)...")
-    model_tail = WhisperModel("tiny", device=device, compute_type="float16")
+    # Tail model (latency)
+    print(f"[Worker] Loading Tail Model ({model_tail_name})...")
+    model_tail = WhisperModel(model_tail_name, device=device, compute_type=compute_type)
     
-    # VAD laden (CPU, sehr leicht)
+    # Load VAD (CPU, lightweight)
     vad_model = load_silero_vad(onnx=True)
     
-    # State-Management für Sessions (session_id -> SessionState)
+    # Session state management (session_id -> SessionState)
     sessions = {}
     
-    # Executor für parallele Inferenz innerhalb des Prozesses
-    # WICHTIG: Damit VAD nicht blockiert, wenn Whisper rechnet.
-    # Whisper gibt den GIL frei, daher funktionieren Threads hier gut.
+    # Executor for parallel inference within the process
+    # IMPORTANT: Prevents VAD from blocking while Whisper is processing
+    # Whisper releases the GIL, so threads work well here
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
     def transcribe_segment(model, audio, lang):
-        """Hilfsfunktion für den ThreadPool"""
+        """Helper function for ThreadPool"""
         segments, info = model.transcribe(audio, beam_size=5, language=lang, condition_on_previous_text=False)
         text = " ".join([s.text.strip() for s in segments if s.text.strip()])
         return text, info.language
@@ -57,7 +63,7 @@ def worker_logic(input_queue, output_queue, device_type=(dt.DeviceType.CUDA)):
 
     while True:
         try:
-            # 1. Daten holen
+            # 1. Get message from queue
             msg = input_queue.get()
             
             if msg is None: break # Poison Pill
@@ -71,11 +77,15 @@ def worker_logic(input_queue, output_queue, device_type=(dt.DeviceType.CUDA)):
             
             session = sessions[session_id]
 
-            # --- CASE A: Audio Chunk verarbeiten ---
+            # --- CASE A: Process Audio Chunk ---
             if msg_type == "audio":
-                audio_chunk = msg.get("data")
+                audio_bytes = msg.get("data")
                 
-                # VAD Loop (über den Chunk iterieren)
+                # Convert int16 bytes to float32 (normalization for Whisper)
+                audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
+                audio_chunk = audio_int16.astype(np.float32) / 32768.0
+                
+                # VAD Loop (iterate over chunk)
                 for i in range(0, len(audio_chunk), VAD_WINDOW_SIZE):
                     chunk = audio_chunk[i: i+VAD_WINDOW_SIZE]
                     if len(chunk) < VAD_WINDOW_SIZE: break
@@ -99,11 +109,11 @@ def worker_logic(input_queue, output_queue, device_type=(dt.DeviceType.CUDA)):
                     
                     if session.is_recording and (worker_pause_event and 'end' in worker_pause_event):
                         if current_duration > MIN_PIPELINE_DURATION:
-                            # Wir kopieren den Buffer und schicken ihn an den ThreadPool
+                            # Copy buffer and send to ThreadPool
                             audio_to_process = np.concatenate(session.sentence_buffer)
-                            session.sentence_buffer = [] # Flush buffer
+                            session.sentence_buffer = []  # Flush buffer
                             
-                            # Submit an Background Model (Medium)
+                            # Submit to Background Model
                             future = executor.submit(transcribe_segment, model_bg, audio_to_process, session.lang_hint)
                             session.pending_futures.append(future)
                             
@@ -113,34 +123,32 @@ def worker_logic(input_queue, output_queue, device_type=(dt.DeviceType.CUDA)):
                     if controller_event and 'end' in controller_event:
                         session.is_recording = False
                         
-                        # Den Rest (Tail) mit dem FAST Model verarbeiten
+                        # Process remaining audio (tail) with FAST model
                         if session.sentence_buffer:
                             audio_tail = np.concatenate(session.sentence_buffer)
-                            # Submit an Tail Model (Tiny)
+                            # Submit to Tail Model
                             future = executor.submit(transcribe_segment, model_tail, audio_tail, session.lang_hint)
                             session.pending_futures.append(future)
                         
-                        # --- SYNCHRONISATION (Wait for completion) ---
-                        # Hier warten wir, bis alle Teile des Satzes fertig sind.
-                        # Da wir im Worker sind, ist kurzes Blockieren hier okay, 
-                        # oder wir könnten das Ergebnis asynchron pushen. 
-                        # Für Einfachheit blockieren wir kurz den Worker-Loop für diesen User,
-                        # aber da Inferenz schon läuft, ist das nur "einsammeln".
+                        # --- SYNCHRONIZATION (Wait for completion) ---
+                        # Wait until all parts of the sentence are processed.
+                        # Short blocking is acceptable here since inference is already running,
+                        # we're just collecting results.
                         
                         full_text_parts = []
                         final_lang = session.lang_hint
                         
                         for f in session.pending_futures:
-                            text, lang = f.result() # Wartet auf Ergebnis
+                            text, lang = f.result()  # Wait for result
                             full_text_parts.append(text)
                             if not final_lang and lang:
                                 final_lang = lang
-                                session.lang_hint = lang # Update hint for next chunks
+                                session.lang_hint = lang  # Update hint for next chunks
                         
                         full_transcription = " ".join(full_text_parts).strip()
                         
                         if full_transcription:
-                            # FINALES ERGEBNIS AN API SENDEN
+                            # Send final result to output queue
                             output_queue.put({
                                 "session_id": session_id,
                                 "type": "result",

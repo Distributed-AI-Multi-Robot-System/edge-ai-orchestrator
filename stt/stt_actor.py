@@ -102,9 +102,9 @@ class STTActor:
             
             # --- SPEECH START ---
             if controller_event and 'start' in controller_event:
-                self.is_recording = True
-                self._reset_state()
-                self.is_recording = True  # Re-set after reset
+                if self.is_recording:
+                    self._reset_state()
+                    self.is_recording = True
             
             # Buffer audio while recording
             if self.is_recording:
@@ -114,7 +114,7 @@ class STTActor:
             current_duration = (len(self.sentence_buffer) * VAD_WINDOW_SIZE) / SAMPLE_RATE
             
             if self.is_recording and pause_event and 'end' in pause_event:
-                if current_duration > MIN_PIPELINE_DURATION:
+                if current_duration > MIN_PIPELINE_DURATION and self.sentence_buffer:
                     # Offload accumulated audio to background model
                     audio_segment = np.concatenate(self.sentence_buffer)
                     self.sentence_buffer = []

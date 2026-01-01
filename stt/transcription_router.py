@@ -2,7 +2,6 @@ import ray
 import itertools
 from stt.transcription_actor import TranscriptionActor
 from stt.worker_type import WorkerType
-from ray.actor import ActorProxy
 
 @ray.remote
 class TranscriptionRouter:
@@ -23,8 +22,7 @@ class TranscriptionRouter:
         self.main_iter = itertools.cycle(self.main_workers)
         self.tail_iter = itertools.cycle(self.tail_workers)
 
-    def get_worker(self, worker_type: WorkerType = WorkerType.BASE) -> ActorProxy:
-        """Returns a handle to the next available worker."""
-        if worker_type == WorkerType.BASE:
-            return next(self.main_iter)
-        return next(self.tail_iter)
+    def get_worker(self, worker_type: WorkerType = WorkerType.BASE):
+            if worker_type == WorkerType.BASE:
+                return next(self.main_iter)
+            return next(self.tail_iter)

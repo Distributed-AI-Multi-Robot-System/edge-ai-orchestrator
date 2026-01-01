@@ -55,7 +55,7 @@ async def stt_websocket_endpoint(websocket: WebSocket):
     logger.info(f"STT session {session_id} connected")
     
     # Register session (spawns STTActor)
-    manager.register(session_id)
+    actor = manager.register(session_id)
     
     try:
         while True:
@@ -63,12 +63,13 @@ async def stt_websocket_endpoint(websocket: WebSocket):
             audio_bytes = await websocket.receive_bytes()
             
             # Stream to STTActor and check for transcription result
-            result = await manager.stream_audio(session_id, audio_bytes)
+            result = await manager.stream_audio(actor, audio_bytes)
             
             if not result:
                 continue  # No transcription yet
 
             # Got a complete transcription
+            print(f"[{session_id}] Transcription: {result}")
             logger.info(f"[{session_id}] Transcription: {result}")
                 
             # TODO: Forward to LangChain agent
@@ -80,5 +81,4 @@ async def stt_websocket_endpoint(websocket: WebSocket):
         logger.error(f"WebSocket error: {e}")
     finally:
         # Cleanup session
-        manager.unregister(session_id)
         logger.info(f"STT session {session_id} cleaned up")

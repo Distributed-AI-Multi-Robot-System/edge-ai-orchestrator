@@ -1,9 +1,7 @@
 import ray
 import logging
 import os
-from ray.util.actor_pool import ActorPool
 
-from stt.transcription_actor import TranscriptionActor
 from stt.stt_actor import STTActor
 from stt.transcription_router import TranscriptionRouter
 
@@ -61,21 +59,8 @@ class STTManager:
         
         return actor
 
-    def unregister(self, session_id: str):
-        """
-        Unregister a session and kill its actor.
-        
-        Args:
-            session_id: Session to unregister
-        """
-        actor = ray.get_actor(session_id)
-        if not actor:
-            logger.warning(f"No actor found for session {session_id} during unregister")
-            return
-        
-        ray.kill(actor)
 
-    async def stream_audio(self, session_id: str, chunk_bytes: bytes) -> str | None:
+    async def stream_audio(self, actor, chunk_bytes: bytes) -> str | None:
         """
         Stream audio chunk to session's STTActor.
         
@@ -86,15 +71,10 @@ class STTManager:
         Returns:
             Transcription string when speech ends, None otherwise
         """
-        actor = ray.get_actor(session_id)
-        if not actor:
-            logger.error(f"Session {session_id} not registered")
-            return None
-        
+    
         try:
-            # Call actor and await result
             result = await actor.compute_audio.remote(chunk_bytes)
             return result
         except Exception as e:
-            logger.error(f"Error processing audio for session {session_id}: {e}")
+            logger.error(f"Error streaming audio to STTActor: {e}")
             return None

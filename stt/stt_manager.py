@@ -5,6 +5,7 @@ from ray.util.actor_pool import ActorPool
 
 from stt.transcription_actor import TranscriptionActor
 from stt.stt_actor import STTActor
+from stt.transcription_router import TranscriptionRouter
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +26,7 @@ class STTManager:
         self.model_tail = os.getenv("STT_MODEL_TAIL", "tiny")
         self.pool_base_size = int(os.getenv("STT_POOL_BASE", "2"))
         self.pool_tiny_size = int(os.getenv("STT_POOL_TINY", "2"))
-        
-        # Actor pools (initialized in start())
-        self.base_pool: ActorPool | None = None
-        self.tiny_pool: ActorPool | None = None
+        self.router = None
         
         logger.info(
             f"STTManager config: device={self.device}, "
@@ -37,26 +35,14 @@ class STTManager:
         )
 
     def start(self):
-        """Initialize transcription actor pools."""
-        logger.info("Creating transcription actor pools...")
-        
-        # Create base model pool (for accuracy, background transcription)
-        base_actors = [
-            TranscriptionActor.remote(self.model_bg, self.device)
-            for _ in range(self.pool_base_size)
-        ]
-        self.base_pool = ActorPool(base_actors)
-        logger.info(f"Base pool created: {self.pool_base_size}x {self.model_bg}")
-        
-        # Create tiny model pool (for latency, tail transcription)
-        tiny_actors = [
-            TranscriptionActor.remote(self.model_tail, self.device)
-            for _ in range(self.pool_tiny_size)
-        ]
-        self.tiny_pool = ActorPool(tiny_actors)
-        logger.info(f"Tiny pool created: {self.pool_tiny_size}x {self.model_tail}")
-        
-        logger.info("STT manager started")
+        logger.info("Starting Transcription Router...")
+        # Start the centralized router
+        self.router = TranscriptionRouter.remote(
+            base_size=self.pool_base_size,
+            tiny_size=self.pool_tiny_size,
+            device=self.device
+        )
+        logger.info("STT Infrastructure ready.")
 
 
     def register(self, session_id: str):
@@ -70,7 +56,7 @@ class STTManager:
             STTActor handle for the session
         """
         # Spawn new STTActor with pool references
-        actor = STTActor.options(name=session_id, get_if_exists=True).remote(self.base_pool, self.tiny_pool)
+        actor = STTActor.options(name=session_id, get_if_exists=True).remote(self.router)
         logger.debug(f"Session {session_id} registered")
         
         return actor

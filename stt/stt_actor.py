@@ -1,8 +1,11 @@
+import asyncio
 import ray
 import numpy as np
 import logging
 from silero_vad import load_silero_vad, VADIterator
-from ray.util.actor_pool import ActorPool
+from ray.actor import ActorHandle
+from stt.transcription_router import TranscriptionRouter
+from stt.worker_type import WorkerType
 
 # --- Configuration ---
 SAMPLE_RATE = 16000
@@ -26,7 +29,7 @@ class STTActor:
         - str: Full transcription when speech ends
     """
     
-    def __init__(self, base_pool: ActorPool, tiny_pool: ActorPool):
+    def __init__(self, router: ActorHandle):
         """
         Initialize STT actor with transcription pools.
         
@@ -34,8 +37,8 @@ class STTActor:
             base_pool: ActorPool of TranscriptionActors with "base" model (accuracy)
             tiny_pool: ActorPool of TranscriptionActors with "tiny" model (latency)
         """
-        self.base_pool = base_pool
-        self.tiny_pool = tiny_pool
+        self.router = router
+        self.pending_futures = []
         
         # Load VAD model (lightweight, ~2MB, CPU-only)
         self.vad_model = load_silero_vad(onnx=True)
@@ -68,8 +71,10 @@ class STTActor:
         self.is_recording = False
         self.lang_hint: str | None = None
         self.vad_pause.reset_states()
+        self.pending_futures = []
 
-    def compute_audio(self, chunk_bytes: bytes) -> str | None:
+
+    async def compute_audio(self, chunk_bytes: bytes) -> str | None:
         """
         Process incoming audio chunk with VAD and manage transcription.
         
@@ -114,24 +119,20 @@ class STTActor:
                     audio_segment = np.concatenate(self.sentence_buffer)
                     self.sentence_buffer = []
                     
-                    # Submit to base pool (fire-and-forget, collect later)
-                    self.base_pool.submit(
-                        lambda actor, args: actor.transcribe.remote(*args),
-                        (audio_segment, self.lang_hint)
-                    )
-                    # Track pending result
-                    self.pending_count += 1
+                    worker = await self.router.get_worker.remote(worker_type=WorkerType.BASE)
+                    future = worker.transcribe.remote(audio_segment, self.lang_hint)
+                    self.pending_futures.append(future)
                 
                 self.vad_pause.reset_states()
             
             # --- SPEECH END ---
             if controller_event and 'end' in controller_event:
                 self.is_recording = False
-                result = self._finalize_transcription()
+                result = await self._finalize_transcription()
         
         return result
 
-    def _finalize_transcription(self) -> str:
+    async def _finalize_transcription(self) -> str | None:
         """
         Finalize transcription: process tail, collect all results, reset state.
         
@@ -139,40 +140,28 @@ class STTActor:
             Complete transcription string
         """
         # Submit remaining audio (tail) to tiny model for low latency
-        tail_submitted = False
         if self.sentence_buffer:
             audio_tail = np.concatenate(self.sentence_buffer)
-            self.tiny_pool.submit(
-                lambda actor, args: actor.transcribe.remote(*args),
-                (audio_tail, self.lang_hint)
-            )
-            tail_submitted = True
+            worker = await self.router.get_worker.remote(worker_type=WorkerType.TAIL)
+            future = worker.transcribe.remote(audio_tail, self.lang_hint)
+            self.pending_futures.append(future)
         
-        # Collect all pending results from pools
+        # Collect all pending results using ray.get()
         all_parts = []
         detected_lang = self.lang_hint
         
         try:
-            # Get results from base pool (background transcriptions)
-            for _ in range(self.pending_count):
-                if self.base_pool.has_next():
-                    text, lang = self.base_pool.get_next_unordered()
+            if self.pending_futures:
+                results = await asyncio.gather(*self.pending_futures)
+                
+                for text, lang in results:
                     if text:
                         all_parts.append(text)
                     if lang and not detected_lang:
                         detected_lang = lang
-                        self.lang_hint = lang
-            
-            # Get tail result from tiny pool
-            if tail_submitted and self.tiny_pool.has_next():
-                text, lang = self.tiny_pool.get_next_unordered()
-                if text:
-                    all_parts.append(text)
-                if lang and not detected_lang:
-                    detected_lang = lang
-                    
+                        
         except Exception as e:
-            print(f"[STTActor] Error collecting results: {e}")
+            logger.error(f"[STTActor] Error collecting results: {e}")
         
         # Build final transcription
         full_transcription = " ".join(all_parts).strip()
@@ -180,4 +169,4 @@ class STTActor:
         # Reset state for next sentence
         self._reset_state()
         
-        return full_transcription if full_transcription else ""
+        return full_transcription if full_transcription else None

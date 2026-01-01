@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 import logging
+import ray
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -22,17 +23,17 @@ stt_manager: STTManager | None = None
 async def lifespan(app: FastAPI):
     global stt_manager
     
-    # Startup: Initialize STT worker
+    # Startup: Initialize Ray and STT manager
+    logger.info("Initializing Ray...")
+    ray.init(ignore_reinit_error=True)
+    
     logger.info("Starting STT manager...")
     stt_manager = STTManager()
     stt_manager.start()
     
     yield
-    
-    # Shutdown: Clean up resources
-    logger.info("Stopping STT manager...")
-    if stt_manager:
-        stt_manager.stop()
+    logger.info("Shutting down Ray...")
+    ray.shutdown()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -53,48 +54,31 @@ async def stt_websocket_endpoint(websocket: WebSocket):
     session_id = str(uuid.uuid4())
     logger.info(f"STT session {session_id} connected")
     
-    # Register session and get result queue
-    result_queue = manager.register(session_id)
-    
-    async def receive_audio():
-        """Receive audio from WebSocket and stream to STT worker."""
-        try:
-            while True:
-                audio_bytes = await websocket.receive_bytes()
-                manager.stream_audio(session_id, audio_bytes)
-        except WebSocketDisconnect:
-            logger.info(f"STT session {session_id} disconnected")
-        except Exception as e:
-            logger.error(f"Audio receive error: {e}")
-    
-    async def process_results():
-        """Process transcription results and forward to agent."""
-        try:
-            while True:
-                result = await result_queue.get()
-                
-                if result.get("type") == "result":
-                    transcription = result.get("text", "")
-                    lang = result.get("lang")
-                    logger.info(f"[{session_id}] Transcription: {transcription} (lang={lang})")
-                    
-                    # TODO: Forward to LangChain agent
-                    # await agent.process(session_id, transcription, lang)
-                    
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error(f"Result processing error: {e}")
-    
-    # Run both tasks concurrently
-    receive_task = asyncio.create_task(receive_audio())
-    process_task = asyncio.create_task(process_results())
+    # Register session (spawns STTActor)
+    manager.register(session_id)
     
     try:
-        # Wait for receive task to complete (disconnect)
-        await receive_task
+        while True:
+            # Receive audio chunk from client
+            audio_bytes = await websocket.receive_bytes()
+            
+            # Stream to STTActor and check for transcription result
+            result = await manager.stream_audio(session_id, audio_bytes)
+            
+            if not result:
+                continue  # No transcription yet
+
+            # Got a complete transcription
+            logger.info(f"[{session_id}] Transcription: {result}")
+                
+            # TODO: Forward to LangChain agent
+            # response = await agent.process(session_id, result)
+                
+    except WebSocketDisconnect:
+        logger.info(f"STT session {session_id} disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
     finally:
-        # Cleanup
-        process_task.cancel()
+        # Cleanup session
         manager.unregister(session_id)
         logger.info(f"STT session {session_id} cleaned up")

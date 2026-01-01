@@ -103,8 +103,9 @@ class STTActor:
             # --- SPEECH START ---
             if controller_event and 'start' in controller_event:
                 if self.is_recording:
+                    # Already recording, reset for new sentence
                     self._reset_state()
-                    self.is_recording = True
+                self.is_recording = True
             
             # Buffer audio while recording
             if self.is_recording:
@@ -153,7 +154,7 @@ class STTActor:
         try:
             if self.pending_futures:
                 results = await asyncio.gather(*self.pending_futures)
-                
+
                 for text, lang in results:
                     if text:
                         all_parts.append(text)

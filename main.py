@@ -71,6 +71,13 @@ async def stt_websocket_endpoint(websocket: WebSocket):
             # Got a complete transcription
             print(f"[{session_id}] Transcription: {result}")
             logger.info(f"[{session_id}] Transcription: {result}")
+            
+            # Send result back to client
+            await websocket.send_json({
+                "type": "result",
+                "text": result,
+                "session_id": session_id
+            })
                 
             # TODO: Forward to LangChain agent
             # response = await agent.process(session_id, result)

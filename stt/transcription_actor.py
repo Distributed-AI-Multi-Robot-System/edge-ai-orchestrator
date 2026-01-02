@@ -15,7 +15,7 @@ class TranscriptionActor:
     def __init__(self, model_name: str = "base", device: str = "cpu"):
         compute_type = "float16" if device == "cuda" else "int8"
         print(f"[TranscriptionActor] Loading model '{model_name}' on {device}...")
-        self.model = WhisperModel(model_name, device=device, compute_type=compute_type)
+        self.model = WhisperModel(model_name, device=device, compute_type=compute_type, cpu_threads=2)
         self.model_name = model_name
         print(f"[TranscriptionActor] Model '{model_name}' ready")
 

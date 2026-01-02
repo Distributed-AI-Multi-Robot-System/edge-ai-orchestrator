@@ -19,31 +19,16 @@ logger = logging.getLogger(__name__)
 class STTActor:
     """
     Ray actor that manages VAD and transcription for a single session.
-    
-    Each WebSocket session gets its own STTActor instance.
-    The actor processes audio chunks, detects speech boundaries via VAD,
-    and coordinates with shared TranscriptionActor pools for Whisper inference.
-    
-    compute_audio() returns:
-        - None: Speech ongoing, no complete sentence yet
-        - str: Full transcription when speech ends
     """
     
     def __init__(self, router: ActorHandle):
-        """
-        Initialize STT actor with transcription pools.
-        
-        Args:
-            base_pool: ActorPool of TranscriptionActors with "base" model (accuracy)
-            tiny_pool: ActorPool of TranscriptionActors with "tiny" model (latency)
-        """
         self.router = router
         self.pending_futures = []
         
-        # Load VAD model (lightweight, ~2MB, CPU-only)
+        # Load VAD model
         self.vad_model = load_silero_vad(onnx=True)
         
-        # VAD iterators for speech detection
+        # VAD iterators
         self.vad_controller = VADIterator(
             self.vad_model,
             threshold=0.6,
@@ -58,52 +43,62 @@ class STTActor:
             min_silence_duration_ms=300,
             speech_pad_ms=0
         )
+
+        self.remainder = np.array([], dtype=np.float32)
         
-        # Session state
         self._reset_state()
         print("[STTActor] Initialized and ready")
 
     def _reset_state(self):
         """Reset all session state for a new sentence."""
         self.sentence_buffer: list[np.ndarray] = []
-        self.pending_count: int = 0  # Count of pending pool submissions
+        self.pending_count: int = 0
         self.transcription_parts: list[str] = []
         self.is_recording = False
         self.lang_hint: str | None = None
         self.vad_pause.reset_states()
         self.pending_futures = []
+        # [NOTE] We do NOT reset self.remainder here. It must survive across sentences.
 
 
     async def compute_audio(self, chunk_bytes: bytes) -> str | None:
         """
         Process incoming audio chunk with VAD and manage transcription.
-        
-        Args:
-            chunk_bytes: Raw audio bytes (int16, 16kHz)
-            
-        Returns:
-            None if speech is ongoing, full transcription string when speech ends
         """
         # Convert int16 bytes to float32
         audio_int16 = np.frombuffer(chunk_bytes, dtype=np.int16)
-        audio_float32 = audio_int16.astype(np.float32) / 32768.0
-        
+        new_audio = audio_int16.astype(np.float32) / 32768.0
+
+        # Prepend remainder from previous call to fix fragmentation
+        if self.remainder.size > 0:
+            audio_float32 = np.concatenate([self.remainder, new_audio])
+        else:
+            audio_float32 = new_audio
+
+        # Calculate valid chunks and save the new remainder
+        n_samples = len(audio_float32)
+        n_chunks = n_samples // VAD_WINDOW_SIZE
+        remainder_start = n_chunks * VAD_WINDOW_SIZE
+
+        # Save the "leftover" bytes for the next call
+        self.remainder = audio_float32[remainder_start:]
+
         result = None
         
-        # Process audio in VAD_WINDOW_SIZE chunks
-        for i in range(0, len(audio_float32), VAD_WINDOW_SIZE):
+        # Loop only up to remainder_start (guarantees full 512 chunks)
+        for i in range(0, remainder_start, VAD_WINDOW_SIZE):
             chunk = audio_float32[i:i + VAD_WINDOW_SIZE]
+            
+            # This check is now theoretically redundant but good for safety
             if len(chunk) < VAD_WINDOW_SIZE:
                 break
             
-            # Run VAD
             controller_event = self.vad_controller(chunk, return_seconds=True)
             pause_event = self.vad_pause(chunk, return_seconds=True)
             
             # --- SPEECH START ---
             if controller_event and 'start' in controller_event:
                 if self.is_recording:
-                    # Already recording, reset for new sentence
                     self._reset_state()
                 self.is_recording = True
             
@@ -116,7 +111,6 @@ class STTActor:
             
             if self.is_recording and pause_event and 'end' in pause_event:
                 if current_duration > MIN_PIPELINE_DURATION and self.sentence_buffer:
-                    # Offload accumulated audio to background model
                     audio_segment = np.concatenate(self.sentence_buffer)
                     self.sentence_buffer = []
                     
@@ -136,18 +130,30 @@ class STTActor:
     async def _finalize_transcription(self) -> str | None:
         """
         Finalize transcription: process tail, collect all results, reset state.
-        
-        Returns:
-            Complete transcription string
         """
-        # Submit remaining audio (tail) to tiny model for low latency
+        
+        # [CHANGE 5] Peek at background tasks to get language hint BEFORE sending tail
+        if self.pending_futures:
+            try:
+                # Wait briefly (50ms) to see if background model has a result
+                done, _ = await asyncio.wait(self.pending_futures, timeout=0.05)
+                for task in done:
+                    # If any task finished, grab the language
+                    _, lang = await task 
+                    if lang and not self.lang_hint:
+                        self.lang_hint = lang
+            except Exception:
+                pass
+
+        # Submit remaining audio (tail) to tiny model
+        # self.lang_hint is likely populated if background processed successfully!
         if self.sentence_buffer:
             audio_tail = np.concatenate(self.sentence_buffer)
             worker = await self.router.get_worker.remote(worker_type=WorkerType.TAIL)
             future = worker.transcribe.remote(audio_tail, self.lang_hint)
             self.pending_futures.append(future)
         
-        # Collect all pending results using ray.get()
+        # Collect all pending results
         all_parts = []
         detected_lang = self.lang_hint
         

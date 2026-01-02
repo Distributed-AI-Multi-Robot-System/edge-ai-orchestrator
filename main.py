@@ -1,4 +1,3 @@
-import asyncio
 import uuid
 import logging
 import ray
@@ -68,15 +67,17 @@ async def stt_websocket_endpoint(websocket: WebSocket):
             if not result:
                 continue  # No transcription yet
 
+            transcription, lang = result
+
             # Got a complete transcription
-            print(f"[{session_id}] Transcription: {result}")
-            logger.info(f"[{session_id}] Transcription: {result}")
+            print(f"[{session_id}] Transcription: {transcription} (lang: {lang})")
+            logger.info(f"[{session_id}] Transcription: {transcription} (lang: {lang})")
             
             # Send result back to client
             await websocket.send_json({
                 "type": "result",
-                "text": result,
-                "session_id": session_id
+                "text": transcription,
+                "lang": lang
             })
                 
             # TODO: Forward to LangChain agent

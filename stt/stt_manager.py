@@ -60,7 +60,7 @@ class STTManager:
         return actor
 
 
-    async def stream_audio(self, actor, chunk_bytes: bytes) -> str | None:
+    async def stream_audio(self, actor, chunk_bytes: bytes) -> tuple[str, str] | None:
         """
         Stream audio chunk to session's STTActor.
         
@@ -73,8 +73,7 @@ class STTManager:
         """
     
         try:
-            result = await actor.compute_audio.remote(chunk_bytes)
-            return result
+            return await actor.compute_audio.remote(chunk_bytes)
         except Exception as e:
             logger.error(f"Error streaming audio to STTActor: {e}")
             return None

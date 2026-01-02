@@ -61,7 +61,7 @@ class STTActor:
         # [NOTE] We do NOT reset self.remainder here. It must survive across sentences.
 
 
-    async def compute_audio(self, chunk_bytes: bytes) -> str | None:
+    async def compute_audio(self, chunk_bytes: bytes) -> tuple[str, str] | None:
         """
         Process incoming audio chunk with VAD and manage transcription.
         """
@@ -82,8 +82,6 @@ class STTActor:
 
         # Save the "leftover" bytes for the next call
         self.remainder = audio_float32[remainder_start:]
-
-        result = None
         
         # Loop only up to remainder_start (guarantees full 512 chunks)
         for i in range(0, remainder_start, VAD_WINDOW_SIZE):
@@ -123,11 +121,11 @@ class STTActor:
             # --- SPEECH END ---
             if controller_event and 'end' in controller_event:
                 self.is_recording = False
-                result = await self._finalize_transcription()
+                return await self._finalize_transcription()
         
-        return result
+        return None
 
-    async def _finalize_transcription(self) -> str | None:
+    async def _finalize_transcription(self) -> tuple[str, str] | None:
         """
         Finalize transcription: process tail, collect all results, reset state.
         """
@@ -176,4 +174,9 @@ class STTActor:
         # Reset state for next sentence
         self._reset_state()
         
-        return full_transcription if full_transcription else None
+        full_transcription = " ".join(all_parts).strip()
+        
+        # Reset state for next sentence
+        self._reset_state()
+        
+        return (full_transcription, detected_lang or "unknown") if full_transcription else None

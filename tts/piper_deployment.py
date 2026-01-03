@@ -3,11 +3,11 @@ from ray import serve
 
 @serve.deployment(
     autoscaling_config={"min_replicas": 1, "max_replicas": 4}, 
-    ray_actor_options={"num_cpus": 4}
+    ray_actor_options={"num_cpus": 1}
 )
 class PiperDeployment:
-    def __init__(self, model_name: str, use_cuda: bool = False):
-        self.voice_model = PiperVoice.load(model_name, use_cuda=use_cuda)
+    def __init__(self, model_path: str, use_cuda: bool = False):
+        self.voice_model = PiperVoice.load(model_path, use_cuda=use_cuda)
 
     # CHANGE: Use 'def' instead of 'async def' for blocking CPU work
     def synthesize(self, text: str):

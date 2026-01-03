@@ -26,23 +26,23 @@ class TTSManager:
         # It is intended to use that much CPU for the TTS deployments, we do here an overprovisioning since not all deployments are used by one actor at the same time
         piper_deployment_english = PiperDeployment.options(
             name=PIPER_DEPLOYMENT_NAME_EN, 
-            ray_actor_options={"num_cpus": 4}
-        ).bind(model_path="models/en_US-lessac-high.onnx")
+            ray_actor_options={"num_cpus": 1}
+        ).bind(model_path="tts/models/en_US-lessac-high.onnx")
         
         piper_deployment_german = PiperDeployment.options(
             name=PIPER_DEPLOYMENT_NAME_DE, 
-            ray_actor_options={"num_cpus": 4}
-        ).bind(model_path="models/de_DE-thorsten-high.onnx")
+            ray_actor_options={"num_cpus": 1}
+        ).bind(model_path="tts/models/de_DE-thorsten-high.onnx")
 
         piper_deployment_italian = PiperDeployment.options(
             name=PIPER_DEPLOYMENT_NAME_IT, 
-            ray_actor_options={"num_cpus": 4}
-        ).bind(model_path="models/it_IT-paola-medium.onnx")
+            ray_actor_options={"num_cpus": 1}
+        ).bind(model_path="tts/models/it_IT-paola-medium.onnx")
 
         piper_deployment_french = PiperDeployment.options(
             name=PIPER_DEPLOYMENT_NAME_FR, 
-            ray_actor_options={"num_cpus": 4}
-        ).bind(model_path="models/fr_FR-siwis-medium.onnx")
+            ray_actor_options={"num_cpus": 1}
+        ).bind(model_path="tts/models/fr_FR-siwis-medium.onnx")
 
         serve.run(piper_deployment_english, name=PIPER_DEPLOYMENT_NAME_EN, route_prefix="/en")
         serve.run(piper_deployment_german, name=PIPER_DEPLOYMENT_NAME_DE, route_prefix="/de")

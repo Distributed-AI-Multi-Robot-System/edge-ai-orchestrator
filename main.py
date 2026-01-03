@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 from stt import STTManager
+from tts.tts_manager import TTSManager
 
 # Load environment variables
 load_dotenv()
@@ -17,11 +18,13 @@ logger = logging.getLogger(__name__)
 
 # Global manager instances
 stt_manager: STTManager | None = None
+tts_manager: TTSManager | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global stt_manager
+    global tts_manager
     
     # Startup: Initialize Ray and STT manager
     logger.info("Initializing Ray...")
@@ -31,6 +34,10 @@ async def lifespan(app: FastAPI):
     logger.info("Starting STT manager...")
     stt_manager = STTManager()
     stt_manager.start()
+
+    logger.info("Starting TTS manager...")
+    tts_manager = TTSManager()
+    tts_manager.start()
     
     yield
     logger.info("Shutting down Ray...")
@@ -80,6 +87,8 @@ async def stt_websocket_endpoint(websocket: WebSocket):
                 
             # TODO: Forward to LangChain agent
             # response = await agent.process(session_id, result)
+
+            # TODO: Receive Token stream from langchain agent and forward to TTSActor
                 
     except WebSocketDisconnect:
         logger.info(f"STT session {session_id} disconnected")

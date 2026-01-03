@@ -38,13 +38,13 @@ class STTManager:
         logger.info("Starting Ray Serve Deployments...")
         base_app = WhisperDeployment.options(
             name="WhisperBase", 
-            ray_actor_options={"num_cpus": 2}
-        ).bind(model_name="base", device=self.device)
+            ray_actor_options={"num_cpus": 3}
+        ).bind(model_name="base", device=self.device, cpu_threads=3)
         
         tail_app = WhisperDeployment.options(
             name="WhisperTail",
             ray_actor_options={"num_cpus": 2}
-        ).bind(model_name="tiny", device=self.device)
+        ).bind(model_name="tiny", device=self.device, cpu_threads=2)
 
         serve.run(base_app, name=BASE_APP_NAME, route_prefix="/base")
         serve.run(tail_app, name=TAIL_APP_NAME, route_prefix="/tail")

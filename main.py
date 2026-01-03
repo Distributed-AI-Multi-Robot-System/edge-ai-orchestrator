@@ -1,6 +1,7 @@
 import uuid
 import logging
 import ray
+from ray import serve
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -25,6 +26,7 @@ async def lifespan(app: FastAPI):
     # Startup: Initialize Ray and STT manager
     logger.info("Initializing Ray...")
     ray.init(ignore_reinit_error=True)
+    serve.start(http_options={"port": 8001})
     
     logger.info("Starting STT manager...")
     stt_manager = STTManager()
@@ -68,10 +70,6 @@ async def stt_websocket_endpoint(websocket: WebSocket):
                 continue  # No transcription yet
 
             transcription, lang = result
-
-            # Got a complete transcription
-            print(f"[{session_id}] Transcription: {transcription} (lang: {lang})")
-            logger.info(f"[{session_id}] Transcription: {transcription} (lang: {lang})")
             
             # Send result back to client
             await websocket.send_json({

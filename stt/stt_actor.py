@@ -1,11 +1,9 @@
 import asyncio
 import ray
+from ray import serve
 import numpy as np
 import logging
 from silero_vad import load_silero_vad, VADIterator
-from ray.actor import ActorHandle
-from stt.transcription_router import TranscriptionRouter
-from stt.worker_type import WorkerType
 
 # --- Configuration ---
 SAMPLE_RATE = 16000
@@ -21,8 +19,14 @@ class STTActor:
     Ray actor that manages VAD and transcription for a single session.
     """
     
-    def __init__(self, router: ActorHandle):
-        self.router = router
+    def __init__(self, whsper_base_deployment_name: str, whsper_tiny_deployment_name: str):
+        try:
+            self.base_whisper = serve.get_app_handle(whsper_base_deployment_name)
+            self.tail_whisper = serve.get_app_handle(whsper_tiny_deployment_name)
+        except Exception as e:
+            print(f"Error connecting to Serve: {e}")
+            # It's often good practice to retry or fail gracefully here
+            raise e
         self.pending_futures = []
         
         # Load VAD model
@@ -112,8 +116,7 @@ class STTActor:
                     audio_segment = np.concatenate(self.sentence_buffer)
                     self.sentence_buffer = []
                     
-                    worker = await self.router.get_worker.remote(worker_type=WorkerType.BASE)
-                    future = worker.transcribe.remote(audio_segment, self.lang_hint)
+                    future = self.base_whisper.transcribe.remote(audio_segment, self.lang_hint)
                     self.pending_futures.append(future)
                 
                 self.vad_pause.reset_states()
@@ -143,12 +146,9 @@ class STTActor:
             except Exception:
                 pass
 
-        # Submit remaining audio (tail) to tiny model
-        # self.lang_hint is likely populated if background processed successfully!
         if self.sentence_buffer:
             audio_tail = np.concatenate(self.sentence_buffer)
-            worker = await self.router.get_worker.remote(worker_type=WorkerType.TAIL)
-            future = worker.transcribe.remote(audio_tail, self.lang_hint)
+            future = self.tail_whisper.transcribe.remote(audio_tail, self.lang_hint)
             self.pending_futures.append(future)
         
         # Collect all pending results
@@ -169,11 +169,6 @@ class STTActor:
             logger.error(f"[STTActor] Error collecting results: {e}")
         
         # Build final transcription
-        full_transcription = " ".join(all_parts).strip()
-        
-        # Reset state for next sentence
-        self._reset_state()
-        
         full_transcription = " ".join(all_parts).strip()
         
         # Reset state for next sentence

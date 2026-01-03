@@ -1,23 +1,17 @@
-import ray
+from ray import serve
 import numpy as np
 from faster_whisper import WhisperModel
+import logging
 
+logger = logging.getLogger("ray.serve")
 
-@ray.remote(num_cpus=2)
-class TranscriptionActor:
-    """
-    Ray actor that hosts a Whisper model for transcription.
-    
-    Multiple instances can be pooled (e.g., 2x base for accuracy, 2x tiny for latency).
-    Each actor owns its model instance to avoid contention.
-    """
-    
-    def __init__(self, model_name: str = "base", device: str = "cpu"):
+@serve.deployment(autoscaling_config={"min_replicas": 1, "max_replicas": 4}, ray_actor_options={"num_cpus": 2})
+class WhisperDeployment:
+    def __init__(self, model_name: str, device: str = "cpu"):
+        self.device = device
         compute_type = "float16" if device == "cuda" else "int8"
-        print(f"[TranscriptionActor] Loading model '{model_name}' on {device}...")
+        logger.info(f"Loading {model_name} model on {device}...")
         self.model = WhisperModel(model_name, device=device, compute_type=compute_type, cpu_threads=2)
-        self.model_name = model_name
-        print(f"[TranscriptionActor] Model '{model_name}' ready")
 
     def transcribe(self, audio_float32: np.ndarray, language: str | None = None) -> tuple[str, str | None]:
         """
@@ -40,13 +34,8 @@ class TranscriptionActor:
                 language=language,
                 condition_on_previous_text=False
             )
-            
-            # Collect text from segments
-            text_parts = [s.text.strip() for s in segments if s.text.strip()]
-            result_text = " ".join(text_parts)
-            
-            return (result_text, info.language)
-            
+            text = " ".join([s.text.strip() for s in segments if s.text.strip()])
+            return (text, info.language)
         except Exception as e:
-            print(f"[TranscriptionActor] Error transcribing: {e}")
+            logger.error(f"Error transcribing: {e}")
             return ("", None)

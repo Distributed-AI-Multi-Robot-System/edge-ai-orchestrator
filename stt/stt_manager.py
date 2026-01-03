@@ -1,11 +1,13 @@
-import ray
 import logging
 import os
+from ray import serve
 
 from stt.stt_actor import STTActor
-from stt.transcription_router import TranscriptionRouter
-
+from stt.whisper_deployment import WhisperDeployment
 logger = logging.getLogger(__name__)
+
+BASE_APP_NAME = "base_whisper_deployment"
+TAIL_APP_NAME = "tail_whisper_deployment"
 
 
 class STTManager:
@@ -33,14 +35,21 @@ class STTManager:
         )
 
     def start(self):
-        logger.info("Starting Transcription Router...")
-        # Start the centralized router
-        self.router = TranscriptionRouter.remote(
-            base_size=self.pool_base_size,
-            tiny_size=self.pool_tiny_size,
-            device=self.device
-        )
-        logger.info("STT Infrastructure ready.")
+        logger.info("Starting Ray Serve Deployments...")
+        base_app = WhisperDeployment.options(
+            name="WhisperBase", 
+            ray_actor_options={"num_cpus": 2}
+        ).bind(model_name="base", device=self.device)
+        
+        tail_app = WhisperDeployment.options(
+            name="WhisperTail",
+            ray_actor_options={"num_cpus": 2}
+        ).bind(model_name="tiny", device=self.device)
+
+        serve.run(base_app, name=BASE_APP_NAME, route_prefix="/base")
+        serve.run(tail_app, name=TAIL_APP_NAME, route_prefix="/tail")
+        
+        logger.info("Ray Serve Deployments Ready: 'WhisperBase' and 'WhisperTiny'")
 
 
     def register(self, session_id: str):
@@ -54,7 +63,10 @@ class STTManager:
             STTActor handle for the session
         """
         # Spawn new STTActor with pool references
-        actor = STTActor.options(name=session_id, get_if_exists=True).remote(self.router)
+        actor = STTActor.options(name=session_id, get_if_exists=True).remote(
+            BASE_APP_NAME, 
+            TAIL_APP_NAME
+        )
         logger.debug(f"Session {session_id} registered")
         
         return actor

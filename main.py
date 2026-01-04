@@ -5,6 +5,7 @@ from ray import serve
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+from ray.actor import ActorHandle
 
 from stt import STTManager
 from tts.tts_manager import TTSManager
@@ -56,6 +57,7 @@ async def stt_websocket_endpoint(websocket: WebSocket):
     Produces: Transcription results forwarded to agent (placeholder)
     """
     assert stt_manager is not None, "STT manager not initialized"
+    assert tts_manager is not None, "TTS manager not initialized"
     manager = stt_manager  # Local reference for type checker
     
     await websocket.accept()
@@ -63,7 +65,8 @@ async def stt_websocket_endpoint(websocket: WebSocket):
     logger.info(f"STT session {session_id} connected")
     
     # Register session (spawns STTActor)
-    actor = manager.register(session_id)
+    stt_actor = manager.register(session_id)
+    tts_actor = tts_manager.register(session_id=session_id)
     
     try:
         while True:
@@ -71,7 +74,7 @@ async def stt_websocket_endpoint(websocket: WebSocket):
             audio_bytes = await websocket.receive_bytes()
             
             # Stream to STTActor and check for transcription result
-            result = await manager.stream_audio(actor, audio_bytes)
+            result = await manager.stream_audio(stt_actor, audio_bytes)
             
             if not result:
                 continue  # No transcription yet
@@ -84,6 +87,17 @@ async def stt_websocket_endpoint(websocket: WebSocket):
                 "text": transcription,
                 "lang": lang
             })
+
+            
+            tts_handle = tts_manager.get_deployment_handle(language=lang)
+            tts_stream = tts_actor.synthesize_text.remote(text=transcription, tts_deployment_handle=tts_handle)
+            
+            async for chunk_ref in tts_stream:
+                # DEBUG: Check exactly what Ray is streaming back
+                chunk = await chunk_ref
+                
+                # Only send if it is valid bytes
+                await websocket.send_bytes(chunk)
                 
             # TODO: Forward to LangChain agent
             # response = await agent.process(session_id, result)

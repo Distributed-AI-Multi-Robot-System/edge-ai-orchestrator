@@ -3,7 +3,7 @@ import os
 from ray import serve
 from tts.piper_deployment import PiperDeployment
 
-from stt.stt_actor import STTActor
+from tts.tts_actor import TTSActor
 logger = logging.getLogger(__name__)
 
 PIPER_BASE_DEPLOYMENT_NAME = "piper_tts_deployment"
@@ -52,7 +52,7 @@ class TTSManager:
         logger.info("Ray Serve Deployments Ready: 'WhisperBase' and 'WhisperTiny'")
 
 
-    def register(self, session_id: str, language: str):
+    def register(self, session_id: str):
         """
         Register a new session and spawn its STTActor.
         
@@ -62,26 +62,26 @@ class TTSManager:
         Returns:
             STTActor handle for the session
         """
-        name  = f"tts_actor_{language}_{session_id}"
-        match language:
-            case "en":
-                tts_deployment_name = PIPER_DEPLOYMENT_NAME_EN
-            case "de":
-                tts_deployment_name = PIPER_DEPLOYMENT_NAME_DE
-            case "it":
-                tts_deployment_name = PIPER_DEPLOYMENT_NAME_IT
-            case "fr":
-                tts_deployment_name = PIPER_DEPLOYMENT_NAME_FR
-            case _:
-                raise ValueError(f"Unsupported language for TTS: {language}")
-            
-        try:
-            piper_app_handle = serve.get_app_handle(tts_deployment_name)
-        except Exception as e:
-            print(f"Error connecting to Serve: {e}")
-            raise e
-        actor = STTActor.options(name=name, get_if_exists=True).remote(tts_deployment_handle=piper_app_handle)
+        name  = f"tts_actor_{session_id}"
+        actor = TTSActor.options(name=name, get_if_exists=True).remote()
         logger.debug(f"Session {session_id} registered")
         
         return actor
-
+    
+    def get_deployment_handle(self, language: str):
+            """Returns the correct DeploymentHandle for the requested language."""
+            match language:
+                case "en":
+                    name = PIPER_DEPLOYMENT_NAME_EN
+                case "de":
+                    name = PIPER_DEPLOYMENT_NAME_DE
+                case "it":
+                    name = PIPER_DEPLOYMENT_NAME_IT
+                case "fr":
+                    name = PIPER_DEPLOYMENT_NAME_FR
+                case _:
+                    # Fallback to English or raise error
+                    logger.warning(f"Unsupported language {language}, falling back to English")
+                    name = PIPER_DEPLOYMENT_NAME_EN
+                
+            return serve.get_app_handle(name)

@@ -13,9 +13,16 @@ class TTSActor:
             download('punkt_tab')
         except Exception as e:
             print(f"[TTSActor] NLTK download warning: {e}")
-            pass
 
         print("[TTSActor] Initialized and ready")
+
+    async def _synthesize(self, text: str, tts_deployment_handle: DeploymentHandle):
+        """Helper method to synthesize text and yield audio chunks."""
+        tts_stream_handle = tts_deployment_handle.options(stream=True)
+        gen: DeploymentResponseGenerator = tts_stream_handle.synthesize.remote(text)
+        async for audio_chunk in gen:
+            yield audio_chunk
+    
 
     async def synthesize_text(self, text: str, finalize: bool, tts_deployment_handle: DeploymentHandle):
         """
@@ -37,16 +44,22 @@ class TTSActor:
             
             # Synthesize EVERYTHING left in the buffer
             text_to_process = self.text_buffer
-            self.text_buffer = "" # Clear immediately
+            self.text_buffer = ""
+            async for chunk in self._synthesize(text_to_process, tts_deployment_handle):
+                yield chunk
+            return
+        
+        # 3. Safety Flush: Prevent buffer from growing infinitely if no punctuation appears
+        # Force a flush to prevent OOM.
+        if len(self.text_buffer) > 1000:
+            text_to_process = self.text_buffer
+            self.text_buffer = ""
             
-            tts_stream_handle = tts_deployment_handle.options(stream=True)
-            gen: DeploymentResponseGenerator = tts_stream_handle.synthesize.remote(text_to_process)
-
-            async for audio_chunk in gen:
-                yield audio_chunk
+            async for chunk in self._synthesize(text_to_process, tts_deployment_handle):
+                yield chunk
             return
 
-        # 3. Normal Processing (Tokenize and find complete sentences)
+        # 4. Normal Processing (Tokenize and find complete sentences)
         sentences = sent_tokenize(self.text_buffer)
         if not sentences:
             return
@@ -55,7 +68,6 @@ class TTSActor:
         if not last_sentence or last_sentence[-1] not in VALID_ENDINGS:
             # It's incomplete! Remove it from the list and store it.
             incomplete_segment = sentences.pop()
-
             self.text_buffer = incomplete_segment
         else:
             self.text_buffer = ""
@@ -64,8 +76,5 @@ class TTSActor:
         if not text_to_synthesize:
             return
         
-        tts_stream_handle = tts_deployment_handle.options(stream=True)
-        gen: DeploymentResponseGenerator = tts_stream_handle.synthesize.remote(text_to_synthesize)
-
-        async for audio_chunk in gen:
-            yield audio_chunk   
+        async for chunk in self._synthesize(text_to_synthesize, tts_deployment_handle):
+            yield chunk

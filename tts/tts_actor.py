@@ -2,7 +2,6 @@ import ray
 from ray.serve.handle import DeploymentHandle, DeploymentResponseGenerator
 from nltk import sent_tokenize, download
 
-download('punkt_tab')
 VALID_ENDINGS = {'.', '!', '?', ';', ':'}
 
 

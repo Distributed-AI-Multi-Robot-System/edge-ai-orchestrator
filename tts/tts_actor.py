@@ -3,6 +3,7 @@ from ray.serve.handle import DeploymentHandle, DeploymentResponseGenerator
 from nltk import sent_tokenize, download
 
 VALID_ENDINGS = {'.', '!', '?', ';', ':'}
+ALLOWED_LANGUAGES = {'english', 'german', 'french', 'italian'}
 
 
 @ray.remote
@@ -24,7 +25,7 @@ class TTSActor:
             yield audio_chunk
     
 
-    async def synthesize_text(self, text: str, finalize: bool, tts_deployment_handle: DeploymentHandle):
+    async def synthesize_text(self, text: str, finalize: bool, language: str, tts_deployment_handle: DeploymentHandle):
         """
         Synthesize text to speech using the PiperDeployment.
         
@@ -34,6 +35,12 @@ class TTSActor:
         Returns:
             Async generator yielding audio chunks as bytes
         """
+
+        # Language check
+        sanitized_language = language.lower()
+        if sanitized_language not in ALLOWED_LANGUAGES:
+            sanitized_language = 'english'  # Default to English if unsupported
+
         # 1. Update buffer
         self.text_buffer += text
 
@@ -60,7 +67,7 @@ class TTSActor:
             return
 
         # 4. Normal Processing (Tokenize and find complete sentences)
-        sentences = sent_tokenize(self.text_buffer)
+        sentences = sent_tokenize(text=self.text_buffer, language=sanitized_language)
         if not sentences:
             return
         

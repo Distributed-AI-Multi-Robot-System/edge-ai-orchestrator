@@ -8,6 +8,15 @@ def get_weather(city: str) -> str:
     """Get weather for a given city."""
     return f"It's always sunny in {city}!"
 
+@tool
+def get_hotel_price(days: int, city: str) -> str:
+    """Get hotel price for a given city for a number of days. The supported cities are San Francisco, New York, and Los Angeles."""
+    cities = {"San Francisco": 200, "New York": 250, "Los Angeles": 180}
+    if city in cities:
+        price = cities[city] * days
+        return f"The hotel price in {city} for {days} days is ${price}."
+    return f"Sorry, we don't have data for {city}."
+
 model = ChatOllama(
     model="ministral-3:14b",
     temperature=0
@@ -15,7 +24,7 @@ model = ChatOllama(
 
 agent = create_agent(
     model=model,
-    tools=[get_weather],
+    tools=[get_weather, get_hotel_price],
 )
 
 system_instruction = SystemMessage(content=(
@@ -30,7 +39,7 @@ print("--- Streaming Response ---")
 string_builder = []
 
 for token, metadata in agent.stream(
-    {"messages": [system_instruction, {"role": "user", "content": "What is the weather in SF?"}]},
+    {"messages": [system_instruction, {"role": "user", "content": "What is the weather in SF? Also tell me the hotel price for 4 days in San Fransico. I want to visit the Golden Gate Bridge."}]},
     stream_mode="messages",
 ):
     # FILTERING LOGIC

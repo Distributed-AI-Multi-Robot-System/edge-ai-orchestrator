@@ -88,9 +88,18 @@ async def stt_websocket_endpoint(websocket: WebSocket):
                 "lang": lang
             })
 
+            # language mapping for TTS
+            language_map = {
+                "de": "german",
+                "en": "english",
+                "fr": "french",
+                "it": "italian"
+            }
+            tts_actor_lang = language_map.get(lang, "english")
+
             
             tts_handle = tts_manager.get_deployment_handle(language=lang)
-            tts_stream = tts_actor.synthesize_text.remote(text=transcription, tts_deployment_handle=tts_handle)
+            tts_stream = tts_actor.synthesize_text.remote(text=transcription, tts_deployment_handle=tts_handle, finalize=False, language=tts_actor_lang)
             
             async for chunk_ref in tts_stream:
                 # DEBUG: Check exactly what Ray is streaming back

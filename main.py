@@ -5,7 +5,7 @@ from ray import serve
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-from ray.actor import ActorHandle
+from agent.agent_manager import AgentManager
 
 from stt import STTManager
 from tts.tts_manager import TTSManager
@@ -20,12 +20,13 @@ logger = logging.getLogger(__name__)
 # Global manager instances
 stt_manager: STTManager | None = None
 tts_manager: TTSManager | None = None
-
+agent_manager: AgentManager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global stt_manager
     global tts_manager
+    global agent_manager
     
     # Startup: Initialize Ray and STT manager
     logger.info("Initializing Ray...")
@@ -39,6 +40,9 @@ async def lifespan(app: FastAPI):
     logger.info("Starting TTS manager...")
     tts_manager = TTSManager()
     tts_manager.start()
+
+    logger.info("Starting Agent manager...")
+    agent_manager = AgentManager()
     
     yield
     logger.info("Shutting down Ray...")
@@ -99,19 +103,31 @@ async def stt_websocket_endpoint(websocket: WebSocket):
 
             
             tts_handle = tts_manager.get_deployment_handle(language=lang)
-            tts_stream = tts_actor.synthesize_text.remote(text=transcription, tts_deployment_handle=tts_handle, finalize=False, language=tts_actor_lang)
-            
-            async for chunk_ref in tts_stream:
-                # DEBUG: Check exactly what Ray is streaming back
-                chunk = await chunk_ref
-                
-                # Only send if it is valid bytes
-                await websocket.send_bytes(chunk)
-                
-            # TODO: Forward to LangChain agent
-            # response = await agent.process(session_id, result)
+            full_agent_response = []
 
-            # TODO: Receive Token stream from langchain agent and forward to TTSActor
+            async for agent_text_chunk in agent_manager.stream_agent_response(transcription):
+                # Stream each chunk to TTSActor
+                tts_stream = tts_actor.synthesize_text.remote(
+                    text=agent_text_chunk,
+                    tts_deployment_handle=tts_handle,
+                    finalize=False,
+                    language=tts_actor_lang
+                )
+
+                full_agent_response.append(agent_text_chunk)
+                
+                async for chunk_ref in tts_stream:
+                    # DEBUG: Check exactly what Ray is streaming back
+                    chunk = await chunk_ref
+                    
+                    # Only send if it is valid bytes
+                    await websocket.send_bytes(chunk)
+
+            await websocket.send_json({
+                "type": "result",
+                "text": "".join(full_agent_response),
+                "lang": lang
+            })
                 
     except WebSocketDisconnect:
         logger.info(f"STT session {session_id} disconnected")

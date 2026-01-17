@@ -29,7 +29,8 @@ class AgentManager:
         # Matches: **bold**, __italic__, `code`, # Headers, [Links](...)
         self.md_pattern = re.compile(r'\*+|_+|`+|#+|\[([^\]]+)\]\([^\)]+\)')
         self.system_instruction = SystemMessage(content=(
-        "You are a helpful assistant. "
+        "You are a helpful assistant called Bibo in the library of the University of Applied Sciences Northwestern Switzerland."
+        "Your task is to assist the students and staff with their questions, especially regarding local information such as weather and hotel prices."
         "If a tool returns a value, assume it is real and USE IT directly. "
         "Do not apologize for not having live access. "
         "Do not verify the data, just report it."

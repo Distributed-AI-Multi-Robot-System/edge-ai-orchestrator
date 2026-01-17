@@ -41,7 +41,7 @@ class AgentManager:
 
 
     async def stream_agent_response(self, user_message: str):
-        for token, _ in self.agent.stream(
+        async for token, _ in self.agent.astream( 
             {"messages": [self.system_instruction, {"role": "user", "content": user_message}]},
             stream_mode="messages",
         ):

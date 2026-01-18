@@ -2,7 +2,8 @@ import re
 from langchain.agents import create_agent
 from langchain_ollama import ChatOllama
 from langchain_core.tools import tool
-from langchain_core.messages import SystemMessage, AIMessageChunk # <--- Import AIMessageChunk
+from langchain_core.messages import SystemMessage, AIMessageChunk
+from langgraph.checkpoint.memory import InMemorySaver
 import emoji
 
 @tool
@@ -38,12 +39,14 @@ class AgentManager:
         self.agent = create_agent(
             model=model,
             tools=[get_weather, get_hotel_price],
+            checkpointer=InMemorySaver(),
         )
 
 
-    async def stream_agent_response(self, user_message: str):
+    async def stream_agent_response(self, user_message: str, thread_id: str = "1"):
         async for token, _ in self.agent.astream( 
             {"messages": [self.system_instruction, {"role": "user", "content": user_message}]},
+            {"configurable": {"thread_id": thread_id}},
             stream_mode="messages",
         ):
             if isinstance(token, AIMessageChunk) and token.content:

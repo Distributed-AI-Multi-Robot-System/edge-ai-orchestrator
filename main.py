@@ -105,7 +105,7 @@ async def stt_websocket_endpoint(websocket: WebSocket):
             tts_handle = tts_manager.get_deployment_handle(language=lang)
             full_agent_response = []
 
-            async for agent_text_chunk in agent_manager.stream_agent_response(transcription):
+            async for agent_text_chunk in agent_manager.stream_agent_response(transcription, session_id):
                 # Stream each chunk to TTSActor
                 tts_stream = tts_actor.synthesize_text.remote(
                     text=agent_text_chunk,

@@ -51,6 +51,7 @@ class STTActor:
         self.remainder = np.array([], dtype=np.float32)
         
         self._reset_state()
+        self.lang_hint = None
         print("[STTActor] Initialized and ready")
 
     def _reset_state(self):

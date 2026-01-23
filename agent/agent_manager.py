@@ -35,6 +35,8 @@ class AgentManager:
         "If a tool returns a value, assume it is real and USE IT directly. "
         "Do not apologize for not having live access. "
         "Do not verify the data, just report it."
+        "Do not use abbreviations in your answers."
+        "Do use flowing text instead of bullet points or numbered lists."
         ))
         self.agent = create_agent(
             model=model,

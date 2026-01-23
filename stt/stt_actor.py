@@ -37,14 +37,14 @@ class STTActor:
             self.vad_model,
             threshold=0.6,
             sampling_rate=SAMPLE_RATE,
-            min_silence_duration_ms=1000,
+            min_silence_duration_ms=700,
             speech_pad_ms=30
         )
         self.vad_pause = VADIterator(
             self.vad_model,
             threshold=0.3,
             sampling_rate=SAMPLE_RATE,
-            min_silence_duration_ms=300,
+            min_silence_duration_ms=200,
             speech_pad_ms=0
         )
 

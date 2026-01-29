@@ -1,61 +1,35 @@
 stateDiagram-v2
-    [*] --> InitActor
+    direction LR
     
-    state InitActor {
-        [*] --> GetWhisperReferences
-        GetWhisperReferences --> InitializeVAD
-        InitializeVAD --> InitializeBuffers
-        InitializeBuffers --> ResetState
-        ResetState --> [*]
+    [*] --> Idle: Actor Ready
+    
+    state "Idle (Monitoring)" as Idle {
+        [*] --> BufferAudio
+        BufferAudio --> VADCheck: Process Chunk
+        VADCheck --> BufferAudio: Silence
     }
-    
-    InitActor --> ProcessAudioChunk
-    
-    state ProcessAudioChunk {
-        [*] --> PrependRemainder
-        PrependRemainder --> ComputeVADWindow
-        ComputeVADWindow --> SaveRemainder
-        SaveRemainder --> CheckVADEvents
-    }
-    
-    CheckVADEvents --> SpeakingStarted: VAD Controller 'start'
-    CheckVADEvents --> PrependRemainder: Continue
-    
-    state SpeakingStarted {
-        [*] --> IsRecording
-        [*] --> IsNotRecording
-        IsNotRecording --> RecordingStateIsReset: Reset State
-        RecordingStateIsReset --> IsRecording: Start Recording
-    }
-    
-    SpeakingStarted --> Recording
-    
-    state Recording {
-        [*] --> AppendToBuffer
-        AppendToBuffer --> CheckPause
-        CheckPause --> AppendToBuffer: Continue
-        CheckPause --> BackgroundOffload: Pause + duration > 3s
+
+    state "Recording Session" as Recording {
+        state "Accumulating Audio" as Accumulating
+        state "Offloading Background Task" as Offload
         
-        state BackgroundOffload {
-            [*] --> CopyToTempBuffer
-            CopyToTempBuffer --> EmptyAudioBuffer
-            EmptyAudioBuffer --> OffloadTranscribe
-            OffloadTranscribe --> ResetVADWorker
-            ResetVADWorker --> [*]
-        }
+        [*] --> Accumulating
         
-        BackgroundOffload --> AppendToBuffer
+        Accumulating --> Accumulating: Continue Speech
+        
+        %% The core logic for background processing
+        Accumulating --> Offload: Pause > 3s
+        Offload --> Accumulating: Task Sent to 'Base' Model
     }
-    
-    Recording --> FinalizeSpeech: VAD Controller 'end'
-    
-    state FinalizeSpeech {
-        [*] --> GatherPendingTasks
-        GatherPendingTasks --> TranscribeTail
-        TranscribeTail --> ConstructFinalText
-        ConstructFinalText --> ResetSessionState
-        ResetSessionState --> ReturnResult
-        ReturnResult --> [*]
+
+    state "Finalizing & Transcribing" as Finalizing {
+        [*] --> CheckPending: Check Background Tasks
+        CheckPending --> TranscribeTail: Send Remainder to 'Tail' Model
+        TranscribeTail --> MergeResults: Gather All Text
+        MergeResults --> [*]
     }
-    
-    FinalizeSpeech --> ProcessAudioChunk
+
+    %% Transitions
+    Idle --> Recording: VAD 'Start' Detected
+    Recording --> Finalizing: VAD 'End' Detected
+    Finalizing --> Idle: Result Returned

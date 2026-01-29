@@ -128,3 +128,136 @@ A key design principle of this architecture is the strict decoupling of session 
 Interface-Driven Design: The STTActor communicates with the transcription service solely through high-level Ray handles (base_whisper and tail_whisper).
 
 Plug-and-Play Deployments: The STTManager configures the deployments (via WhisperDeployment) independently of the actor logic. Replacing the inference engine—for example, switching from faster-whisper to a  different ASR model—only requires updating the WhisperDeployment or adding further Ray deployments with the intended ASR models. Then updating / extending the class and the start() method in the manager is required. The complex state machinery of the VAD and buffering logic remains untouched.
+
+
+## Streaming Text-to-Speech (TTS)
+This module implements a low-latency, streaming TTS pipeline designed to provide immediate audio feedback during interaction. The system uses a per-session actor to buffer incoming text streams and intelligently chunk them into synthesizeable sentences, preventing audio fragmentation.
+
+### Core Concept: The TTSActor
+The TTSActor serves as the session-bound orchestrator. Unlike standard TTS endpoints that require a full response before generating audio, this actor implements a streaming sentence-boundary pipeline. It accumulates text tokens and only triggers synthesis when a grammatically complete sentence is formed, ensuring natural prosody.
+
+```mermaid
+    stateDiagram-v2
+        direction LR
+        
+        [*] --> Idle
+        
+        state "Accumulating" as Accumulating {
+            [*] --> Append: Add Text to Buffer
+            Append --> CheckTriggers
+            
+            state trigger_check <<choice>>
+            CheckTriggers --> trigger_check
+            
+            %% Trigger 1: Forced Flush
+            trigger_check --> Flush: Finalize=True OR Buffer > 1000 chars
+            
+            %% Trigger 2: Normal Processing
+            trigger_check --> Tokenizing: Standard Update
+        }
+
+        state "Analyzing Syntax" as Tokenizing {
+            [*] --> SplitSentences: NLTK Tokenize
+            SplitSentences --> CheckPunctuation: Check Last Segment
+            
+            state valid_check <<choice>>
+            CheckPunctuation --> valid_check
+            
+            %% Case A: Complete Sentences Found
+            valid_check --> ExtractValid: Found [.?!]
+            ExtractValid --> RetainRemainder: Keep Incomplete Part
+            
+            %% Case B: No Complete Sentences
+            valid_check --> Idle: No Valid Endings
+        }
+
+        state "Synthesizing" as Synthesizing {
+            [*] --> CallPiper: Send to Ray Deployment
+            CallPiper --> StreamAudio: Yield Audio Chunks
+        }
+
+        %% Main Transitions
+        Idle --> Accumulating: Receive Text
+        Flush --> Synthesizing: Synthesize Entire Buffer
+        RetainRemainder --> Synthesizing: Synthesize Valid Part
+        Synthesizing --> Idle: Streaming Complete
+```
+
+### Accumulation & Safety Incoming text is appended to a persistent buffer.
+#### Safety Mechanism
+To prevent Out-Of-Memory (OOM) errors during unusually long responses without punctuation, the system forces a transition to Synthesizing (Flush) if the buffer exceeds 1,000 characters.
+
+#### Semantic Chunking (Analyzing Syntax)
+The system uses the NLTK tokenizer to split the buffer into sentences based on the target language.
+
+#### Completeness Check
+The logic inspects the last segment of the buffer. If it does not end with valid punctuation (e.g., . ! ?), it is treated as "incomplete" and retained in the buffer. Only fully completed sentences are extracted and moved to the Synthesizing state. This ensures that audio is generated only for grammatically coherent segments, enhancing naturalness.
+
+#### Finalization
+When the generation stream ends (finalize=True), the system bypasses the syntax check and flushes the entire buffer to Synthesizing immediately, ensuring no words are lost.
+
+### Infrastructure
+The system is built on Ray Serve to manage Piper TTS models. The Piper TTS models are optimized for low-latency synthesis and can stream audio chunks as they are generated.
+
+#### Multi-Language Deployment 
+The TTSManager initializes distinct deployments for English, German, Italian, and French. This allows the system to switch languages dynamically by the detected language of the STT Module.
+
+#### Non-Blocking Synthesis 
+The PiperDeployment explicitly defines the synthesize method as a synchronous function (def) rather than asynchronous (async def).
+
+Why: This signals Ray Serve to run the computation in a separate thread pool. This prevents the heavy CPU blocking of the model inference from stalling the main asyncio event loop, ensuring that the system remains responsive to new requests while generating audio.
+
+### Component Structure
+The TTSManager acts as a factory and registry, while the TTSActor is a lightweight, stateful buffer that delegates heavy computation to specific PiperDeployment instances based on the detected language.
+
+```mermaid
+classDiagram
+    %% Relationships
+    TTSManager ..> PiperDeployment : Spawns (start)
+    TTSManager ..> TTSActor : Spawns (register)
+    TTSActor ..> PiperDeployment : Invokes (via Handle)
+    Client_Main ..> TTSManager : 1. Request Handle
+    Client_Main ..> TTSActor : 2. Push Text & Handle
+    TTSActor ..> Client_Main : 3. Stream Audio Chunks
+
+    class Client_Main {
+        <<WebSocket Endpoint>>
+        +language_map: Dict
+        +receive_audio()
+        +get_stt_result()
+        +route_to_tts()
+    }
+
+    class TTSManager {
+        -deployment_handles: Dict
+        +start()
+        +register(session_id) TTSActor
+        +get_deployment_handle(lang_code) DeploymentHandle
+    }
+
+    class TTSActor {
+        <<Session Stateful>>
+        -text_buffer: str
+        -valid_endings: Set
+        +synthesize_text(text, finalize, lang, handle)
+        -_synthesize(text, handle)
+    }
+
+    class PiperDeployment {
+        <<Stateless Service>>
+        -voice_model: PiperVoice
+        +synthesize(text) Generator[bytes]
+    }
+
+    %% Notes for clarity
+    note for TTSManager "Maps language codes to specific Ray Serve handles"
+    note for TTSActor "Buffers text until sentence complete."
+    note for PiperDeployment "Runs in ThreadPool. One instance per Language."
+```
+
+
+## Langchain Agent
+IMPORTANT: This module is already implemented in /agent, but the documentation is not yet written.
+
+## Overall Architecture
+IMPORTANT: The overall architecture is developed, but the documentation is not yet written.

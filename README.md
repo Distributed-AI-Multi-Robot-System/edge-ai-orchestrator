@@ -2,16 +2,17 @@
 
 This module implements a real-time Speech-to-Text (STT) actor designed to minimize user-perceived latency. The system orchestrates voice activity detection (VAD) and transcription by maintaining a per-session state machine that intelligently offloads processing tasks to background workers.
 
-1. Core Concept: The STTActor
+### Core Concept
 The STTActor acts as a stateful orchestrator for a single audio stream session. Unlike traditional pipelines that wait for a full sentence to finish before processing, this actor employs a hybrid offloading strategy:
 
-Base Model (Background): Handles longer, intermediate audio segments during natural pauses in speech.
+Base Model (Background): Handles longer, intermediate audio segments during natural pauses in speech. Since the user continues speaking, he does not notice any delay and the system can utilize a more accurate, larger model.
 
-Tail Model (Finalization): Handles the remaining audio "tail" immediately upon speech termination, typically using a faster, smaller model (e.g., Tiny).
+Tail Model (Finalization): Handles the remaining audio "tail" immediately upon speech termination, typically using a faster, smaller model (e.g., Tiny) to improve the. latency optimizing edge hardware resource usage.
 
-2. Behavioral State Machine
+### Behavioral State Machine
 The actor operates in three primary states to manage the audio stream efficiently:
 
+```mermaid
 stateDiagram-v2
     direction LR
     
@@ -47,26 +48,76 @@ stateDiagram-v2
     Idle --> Recording: VAD 'Start' Detected
     Recording --> Finalizing: VAD 'End' Detected
     Finalizing --> Idle: Result Returned
+```
 
-A. Idle (Monitoring) The system buffers incoming raw audio chunks and processes them through a Silero VAD iterator (vad_controller). It remains in this state until a speech start event is detected.
+#### A. Idle (Monitoring) 
+The system buffers incoming raw audio chunks and processes them through a Silero VAD iterator (vad_controller). It remains in this state until a speech start event is detected.
 
-B. Recording (The Offload Loop) Once speech begins, the system accumulates audio into a sentence_buffer. To prevent latency spikes at the end of long sentences, the system monitors for "pause" events using a secondary VAD iterator (vad_pause) with a lower threshold.
+#### B. Recording (The Offload Loop)** 
+Once speech begins, the system accumulates audio into a sentence_buffer. To prevent latency spikes at the end of long sentences, the system monitors for "pause" events using a secondary VAD iterator (vad_pause) with a lower threshold.
 
-Trigger: If a pause is detected and the accumulated buffer exceeds the MIN_PIPELINE_DURATION (3.0 seconds).
+- **Trigger:** If a pause is detected and the accumulated buffer exceeds the MIN_PIPELINE_DURATION (3.0 seconds).
 
-Action: The buffered audio is flushed and sent asynchronously to the Base Whisper deployment via Ray Serve. The actor continues recording without blocking.
+- **Action:** The buffered audio is flushed and sent asynchronously to the Base Whisper deployment via Ray Serve. The actor continues recording without blocking.
 
-C. Finalizing (Aggregation) When the primary VAD detects the end of speech:
+#### C. Finalizing (Aggregation) 
+When the primary VAD detects the end of speech:
+- **Language Check:** The actor briefly checks if any background tasks have finished to extract a language_hint (e.g., "en", "de"), improving the accuracy and latency of the final segment.
 
-Language Check: The actor briefly checks if any background tasks have finished to extract a language_hint (e.g., "en", "de"), improving the accuracy of the final segment.
+- **Tail Transcription:** The remaining audio "tail" is sent to the Tail Whisper deployment (configured as a faster model).
 
-Tail Transcription: The remaining audio "tail" is sent to the Tail Whisper deployment (configured as a faster model).
+- **Merge:** The system awaits all pending futures (background + tail), concatenates the partial transcripts in order, and returns the final result.
 
-Merge: The system awaits all pending futures (background + tail), concatenates the partial transcripts in order, and returns the final result.
+### Infrastructure
+The system is built on Ray Core and Ray Serve, allowing the VAD logic (CPU-bound) to scale independently from the Whisper models (GPU/Compute-bound). The STTManager initializes two distinct deployment pools:
 
-3. Infrastructure
-The system is built on Ray Serve, allowing the VAD logic (CPU-bound) to scale independently from the Whisper models (GPU/Compute-bound). The STTManager initializes two distinct deployment pools:
+- **whsper_base_deployment:** Optimized for accuracy on longer contexts.
 
-whsper_base_deployment: Optimized for accuracy on longer contexts.
+- **whsper_tiny_deployment:** Optimized for speed to finalize interaction quickly.
 
-whsper_tiny_deployment: Optimized for speed to finalize interaction quickly.
+The configuration of the deployments is managed by the STTManager.
+
+#### STT Manager
+The STTManager serves as the central orchestration layer for the speech-to-text infrastructure. It decouples the client-facing session management from the underlying distributed computing resources provided by Ray. Its primary responsibilities are twofold: infrastructure provisioning and session lifecycle management.
+
+Upon initialization, the manager configures the runtime environment based on system constraints (e.g., CPU/GPU availability) and deploys two distinct Ray Serve applications: a Base Model for high-throughput background processing and a Tail Model (typically a smaller, faster model) for low-latency finalization.
+
+For every new user connection, the STTManager spawns a dedicated STTActor. It injects the handles of the deployed Whisper models into this actor, ensuring that individual sessions remain lightweight while sharing the heavy inference models efficiently.
+
+The Ray Whisper deployments use autoscaling policies to dynamically adjust the number of replicas based on the workload, ensuring optimal resource utilization without compromising performance. The autoscaling and other resource constraints are configured within the STTManager, abstracting these complexities away from the session actors.
+
+##### Component Structure
+The following class diagram illustrates the STTManager's relationships. It highlights how the manager acts as a factory for STTActor instances while simultaneously maintaining the lifecycle of the shared WhisperDeployment services.
+
+```mermaid
+classDiagram
+    direction TB
+
+    %% Definitions
+    class STTManager {
+        -str device
+        -str model_bg
+        -str model_tail
+        +start()
+        +register(session_id: str) ActorHandle
+        +stream_audio(actor, chunk: bytes)
+    }
+
+    class WhisperDeployment {
+        <<Ray Serve Deployment>>
+        +transcribe(audio, lang_hint)
+    }
+
+    class STTActor {
+        <<Ray Actor>>
+        +compute_audio(chunk)
+    }
+
+    %% Relationships
+    STTManager ..> WhisperDeployment : Deploys (Base & Tail)
+    STTManager ..> STTActor : Spawns per Session
+    STTActor ..> WhisperDeployment : Offload transcription workload
+    
+    note for STTManager "Orchestrates Infrastructure and maps Sessions to Actors"
+    note for WhisperDeployment "Shared Inference Pool (Scale independent of sessions)"
+    ```

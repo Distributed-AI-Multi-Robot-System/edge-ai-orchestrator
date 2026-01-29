@@ -120,4 +120,11 @@ classDiagram
     
     note for STTManager "Orchestrates Infrastructure and maps Sessions to Actors"
     note for WhisperDeployment "Shared Inference Pool (Scale independent of sessions)"
-    ```
+```
+
+### Architectural Modularity
+A key design principle of this architecture is the strict decoupling of session management from the inference engine. The system is designed to be fully modular, allowing for the substitution of transcription backends without requiring changes to the core orchestration logic.
+
+Interface-Driven Design: The STTActor communicates with the transcription service solely through high-level Ray handles (base_whisper and tail_whisper).
+
+Plug-and-Play Deployments: The STTManager configures the deployments (via WhisperDeployment) independently of the actor logic. Replacing the inference engine—for example, switching from faster-whisper to a  different ASR model—only requires updating the WhisperDeployment or adding further Ray deployments with the intended ASR models. Then updating / extending the class and the start() method in the manager is required. The complex state machinery of the VAD and buffering logic remains untouched.

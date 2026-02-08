@@ -259,5 +259,22 @@ classDiagram
 ## Langchain Agent
 IMPORTANT: This module is already implemented in /agent, but the documentation is not yet written.
 
+Functionalities:
+- Tooling (function calling)
+- Short-term memory (conversation history)
+- Vector database (retrieval-augmented generation)
+- Token streaming
+- Agent session management (each session has its own short-term memory, but shares the agent instance to save resources)
+- Toke cleaning to feed clean token stream to TTS engine
+
+## Architecture
+LLM Inference: Replacable cloud api or if enough resources, local deployment
+Langchain Agent: Edge server deployment
+Vector Database: Unclear for now, but likely a managed service (e.g., Pinecone) or a local deployment (e.g., Weaviate) depending on the scale and latency requirements.
+
 ## Overall Architecture
 IMPORTANT: The overall architecture is developed, but the documentation is not yet written.
+
+
+Client (WebSocket) --> Orchestrator(STT Engine --> (full transcription) Langchain Agent --> (real time token stream) TTS Engine) --> (websocket) Client (Audio Stream)
+the langchain agent can also call api endpoints of the client to trigger actions on the client side like displaying content on the display, or triggering the camera in the head.

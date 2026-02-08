@@ -1,0 +1,39 @@
+flowchart TD
+    %% Main Inputs
+    STT[STT Engine] -->|User Text| AgentCore
+    
+    subgraph AgentLayer [Langchain Agent Layer]
+        direction TB
+        
+        %% Core Components
+        AgentCore[Agent Core / LangGraph]
+        Memory[(Short-term Memory)]
+        SessionMgr[Session Management]
+        TokenClean[Token Cleaning]
+        Tooling[Tooling / Function Calling]
+
+        %% Internal Connections
+        SessionMgr -.->|Thread ID| AgentCore
+        Memory <-->|Load/Save State| AgentCore
+        AgentCore -- Function Calls --> Tooling
+        Tooling -- Observation --> AgentCore
+        AgentCore -->|Raw Tokens| TokenClean
+    end
+
+    subgraph Services [External Services]
+        LLM[LLM Inference]
+        RAG[Vector DB / RAG]
+    end
+
+    subgraph Pepper [Pepper Robot / Client]
+        ClientAPI[Client Actions API]
+    end
+
+    %% External Connections
+    AgentCore <-->|Inference| LLM
+    AgentCore <-->|Context Retrieval| RAG
+    
+    %% Outputs
+    Tooling -->|Trigger Action| ClientAPI
+    TokenClean -->|Cleaned Stream| TTS[TTS Engine]
+

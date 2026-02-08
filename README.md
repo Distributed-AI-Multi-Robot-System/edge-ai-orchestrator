@@ -257,23 +257,143 @@ classDiagram
 
 
 ## Langchain Agent
-IMPORTANT: This module is already implemented in /agent, but the documentation is not yet written.
+This module serves as the cognitive core of the system, orchestrating the interaction between user input, external knowledge, and robot actions. It leverages LangGraph to implement a cyclic control flow (ReAct pattern), allowing the agent to reason, execute tools, and verify results before responding.
 
-Functionalities:
-- Tooling (function calling)
-- Short-term memory (conversation history)
-- Vector database (retrieval-augmented generation)
-- Token streaming
-- Agent session management (each session has its own short-term memory, but shares the agent instance to save resources)
-- Toke cleaning to feed clean token stream to TTS engine
+### Core Concept
+The AgentManager is designed for high-concurrency edge environments. Unlike standard implementations that instantiate a new agent for every user, this system utilizes a shared graph definition with isolated state management.
 
-## Architecture
-LLM Inference: Replacable cloud api or if enough resources, local deployment
-Langchain Agent: Edge server deployment
-Vector Database: Unclear for now, but likely a managed service (e.g., Pinecone) or a local deployment (e.g., Weaviate) depending on the scale and latency requirements.
+- Session Isolation: The agent logic is stateless; user-specific context (conversation history) is stored in an InMemorySaver checkpointer and retrieved via a unique thread_id for each cycle.
+
+- Latency Optimization: The agent streams tokens immediately as they are generated. A specialized "Token Cleaning" middleware strips non-verbal artifacts (Markdown, emojis) in real-time to ensure the TTS engine receives only synthesizeable text.
+
+### Architecture
+The architecture separates the cognitive reasoning (Agent Layer) from the inference computation (Services) and execution (Client).
+```mermaid
+    flowchart TD
+        %% Main Inputs
+        STT[STT Engine] -->|User Text| AgentCore
+        
+        subgraph AgentLayer [Langchain Agent Layer]
+            direction TB
+            
+            %% Core Components
+            AgentCore[Agent Core / LangGraph]
+            Memory[(Short-term Memory)]
+            SessionMgr[Session Management]
+            TokenClean[Token Cleaning]
+            Tooling[Tooling / Function Calling]
+
+            %% Internal Connections
+            SessionMgr -.->|Thread ID| AgentCore
+            Memory <-->|Load/Save State| AgentCore
+            AgentCore -- Function Calls --> Tooling
+            Tooling -- Observation --> AgentCore
+            AgentCore -->|Raw Tokens| TokenClean
+        end
+
+        subgraph Services [External Services]
+            LLM[LLM Inference]
+            RAG[Vector DB / RAG]
+        end
+
+        subgraph Pepper [Pepper Robot / Client]
+            ClientAPI[Client Actions API]
+        end
+
+        %% External Connections
+        AgentCore <-->|Inference| LLM
+        AgentCore <-->|Context Retrieval| RAG
+        
+        %% Outputs
+        Tooling -->|Trigger Action| ClientAPI
+        TokenClean -->|Cleaned Stream| TTS[TTS Engine]
+
+```
+
+### Functional Components
+#### Session Management & Memory
+The system implements a singleton AgentManager that persists conversation history in short-term memory.
+
+A single agent instance handles multiple concurrent sessions.
+
+**Short-term Memory:** The checkpointer saves the state of the graph (messages, tool outputs) per thread_id, enabling multi-turn conversations without re-sending the full context manually. The context state is managed by langgraph. The thread_id is represented by the uuid of a websocket session which is injected by the mediator class of the orchestrator.
+
+#### Function Calling & Tooling
+The agent can call external tools (e.g., APIs, databases) via predefined Python functions. The function calling is executed on edge hardware while the LLM inference is outsource to a cloud API due to hardware constraints of edge devices.
+
+- **Information Retrieval:** Tools like get_weather or get_hotel_price allow the agent to fetch real-time data.
+
+- **Client Actions:** The agent can trigger physical behaviors on the robot (e.g., gestures, display updates) via the Client Actions API.
+
+#### Token Cleaning & Streaming
+To support the real-time nature of the voice pipeline, the agent acts as a streaming filter:
+
+- **Raw Stream:** Captures AIMessageChunk objects from the LLM.
+
+- **Sanitization:** Removes standard Markdown (bold, italics, links) and emojis that would disrupt speech synthesis.
+
+- **Output:** Yields clean text chunks directly to the TTS WebSocket loop.
+
+### Infrastructure
+The agent layer is designed to be deployment-agnostic regarding the backend LLM.
+
+LLM Inference: Usage of a cloud LLM API which can be flexibly switched (e.g., OpenAI, Azure, custom) by updating the LLM wrapper class.
+
+Vector Database (RAG): Designed to integrate with managed services (e.g., Pinecone) or local instances (e.g., Weaviate) to support Retrieval-Augmented Generation for domain-specific knowledge (not yet clear if hosted on edge server or in the cloued).
+
+Deployment: The agent runs on the edge server alongside the STT/TTS engines to minimize network latency.
 
 ## Overall Architecture
 IMPORTANT: The overall architecture is developed, but the documentation is not yet written.
+
+```mermaid
+    flowchart TD
+        subgraph Client [Pepper Robot]
+            Microphone[Microphone / Audio Stream]
+            Speakers[Speakers / Audio Output]
+            RobotControl[Robot Control System]
+        end
+
+        subgraph EdgeServer [Edge Server Library]
+            subgraph Orchestrator [FastAPI Main / Orchestrator]
+                WS_Endpoint[WebSocket Endpoint]
+            end
+
+            subgraph Actors [Ray Actors]
+                STT[STT Engine]
+                Agent[Langchain Agent]
+                TTS[TTS Engine]
+            end
+        end
+
+        subgraph Services [Inference Services]
+            %% Can be local (Ollama) or Cloud
+            LLM[LLM / Ollama] 
+            RAG[Vector DB]
+        end
+
+        %% Data Flow - Input
+        Microphone == Audio Stream ==> WS_Endpoint
+        WS_Endpoint -- 1. Raw Audio --> STT
+        STT -- 2. Transcription --> WS_Endpoint
+
+        %% Data Flow - Reasoning
+        WS_Endpoint -- 3. Text --> Agent
+        Agent <-->|Inference| LLM
+        Agent <-->|Context| RAG
+        
+        %% Tooling / Side Effects
+        Agent -.->|Tool Call HTTP| RobotControl
+
+        %% Data Flow - Output
+        Agent -- 4. Token Stream --> WS_Endpoint
+        WS_Endpoint -- 5. Text Chunks --> TTS
+        TTS -- 6. Audio Bytes --> WS_Endpoint
+        WS_Endpoint == Audio Stream ==> Speakers
+
+
+
+```
 
 
 Client (WebSocket) --> Orchestrator(STT Engine --> (full transcription) Langchain Agent --> (real time token stream) TTS Engine) --> (websocket) Client (Audio Stream)

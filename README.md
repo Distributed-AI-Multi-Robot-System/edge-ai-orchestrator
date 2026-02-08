@@ -291,7 +291,7 @@ The architecture separates the cognitive reasoning (Agent Layer) from the infere
             AgentCore -->|Raw Tokens| TokenClean
         end
 
-        subgraph Services [External Services]
+        subgraph Services [Cloud Services]
             LLM[LLM Inference]
             RAG[Vector DB / RAG]
         end
@@ -344,7 +344,7 @@ Vector Database (RAG): Designed to integrate with managed services (e.g., Pineco
 Deployment: The agent runs on the edge server alongside the STT/TTS engines to minimize network latency.
 
 ## Overall Architecture
-IMPORTANT: The overall architecture is developed, but the documentation is not yet written.
+The system leverages a modular hybrid edge cloud architecture.The computational complexity is offloaded from the pepper robot hardware to the edge server and cloud services, while maintaining low-latency interactions through intelligent orchestration and streaming pipelines.
 
 ```mermaid
     flowchart TD
@@ -390,10 +390,9 @@ IMPORTANT: The overall architecture is developed, but the documentation is not y
         WS_Endpoint -- 5. Text Chunks --> TTS
         TTS -- 6. Audio Bytes --> WS_Endpoint
         WS_Endpoint == Audio Stream ==> Speakers
-
-
-
 ```
+
+
 
 
 Client (WebSocket) --> Orchestrator(STT Engine --> (full transcription) Langchain Agent --> (real time token stream) TTS Engine) --> (websocket) Client (Audio Stream)

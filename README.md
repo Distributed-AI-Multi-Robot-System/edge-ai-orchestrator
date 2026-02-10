@@ -1,3 +1,70 @@
+# Distributed Social AI Multi-Robot System for Library Environments
+
+This repository contains the source code and architectural documentation for a hybrid edge-cloud robotic system orchestrator designed to modernize the social service robots (SoftBank Pepper) at the FHNW University Library.
+
+Current robotic implementations in library environments often suffer from monolithic architectures, high latency, and dependency on proprietary, legacy software. This project introduces a distributed, maintainable, and scalable alternative  that decouples the robot's hardware from its cognitive capabilities.
+
+By offloading heavy computation (Speech Recognition, LLM Inference) to an Edge Server and utilizing Ray for asynchronous concurrent orchestration, this system achieves natural, low-latency Human-Robot Interaction (HRI).
+
+## Key Features
+Hybrid Edge-Cloud Architecture: Formal separation of concerns where orchestration happens on the edge/cloud, and the robot acts as a thin client.   
+
+Low-Latency Voice Pipeline: Asynchronous STT (Whisper) and Streaming TTS (Piper) actors minimize the "time-to-speech" gap.
+
+Cognitive Agent: A LangGraph-based agent with short-term memory and tool usage capabilities for dynamic visitor assistance.   
+
+Infrastructure as Code: Dockerized deployment designed for maintainability by non-specialist operators.
+
+## Overall Architecture
+The system leverages a modular hybrid edge cloud architecture.The computational complexity is offloaded from the pepper robot hardware to the edge server and cloud services, while maintaining low-latency interactions through intelligent orchestration and streaming pipelines.
+
+```mermaid
+    flowchart TD
+        subgraph Client [Pepper Robot]
+            Microphone[Microphone / Audio Stream]
+            Speakers[Speakers / Audio Output]
+            RobotControl[Robot Control System]
+        end
+
+        subgraph EdgeServer [Edge Server Library]
+            subgraph Orchestrator [FastAPI Main / Orchestrator]
+                WS_Endpoint[WebSocket Endpoint]
+            end
+
+            subgraph Actors [Ray Actors]
+                STT[STT Engine]
+                Agent[Langchain Agent]
+                TTS[TTS Engine]
+            end
+        end
+
+        subgraph Services [Inference Services]
+            %% Can be local (Ollama) or Cloud
+            LLM[LLM / Ollama] 
+            RAG[Vector DB]
+        end
+
+        %% Data Flow - Input
+        Microphone == Audio Stream ==> WS_Endpoint
+        WS_Endpoint -- 1. Raw Audio --> STT
+        STT -- 2. Transcription --> WS_Endpoint
+
+        %% Data Flow - Reasoning
+        WS_Endpoint -- 3. Text --> Agent
+        Agent <-->|Inference| LLM
+        Agent <-->|Context| RAG
+        
+        %% Tooling / Side Effects
+        Agent -.->|Tool Call HTTP| RobotControl
+
+        %% Data Flow - Output
+        Agent -- 4. Token Stream --> WS_Endpoint
+        WS_Endpoint -- 5. Text Chunks --> TTS
+        TTS -- 6. Audio Bytes --> WS_Endpoint
+        WS_Endpoint == Audio Stream ==> Speakers
+```
+
+
 ## Speech to Text Engine: Hybrid Asynchronous Transcription
 
 This module implements a real-time Speech-to-Text (STT) actor designed to minimize user-perceived latency. The system orchestrates voice activity detection (VAD) and transcription by maintaining a per-session state machine that intelligently offloads processing tasks to background workers.
@@ -342,58 +409,3 @@ LLM Inference: Usage of a cloud LLM API which can be flexibly switched (e.g., Op
 Vector Database (RAG): Designed to integrate with managed services (e.g., Pinecone) or local instances (e.g., Weaviate) to support Retrieval-Augmented Generation for domain-specific knowledge (not yet clear if hosted on edge server or in the cloued).
 
 Deployment: The agent runs on the edge server alongside the STT/TTS engines to minimize network latency.
-
-## Overall Architecture
-The system leverages a modular hybrid edge cloud architecture.The computational complexity is offloaded from the pepper robot hardware to the edge server and cloud services, while maintaining low-latency interactions through intelligent orchestration and streaming pipelines.
-
-```mermaid
-    flowchart TD
-        subgraph Client [Pepper Robot]
-            Microphone[Microphone / Audio Stream]
-            Speakers[Speakers / Audio Output]
-            RobotControl[Robot Control System]
-        end
-
-        subgraph EdgeServer [Edge Server Library]
-            subgraph Orchestrator [FastAPI Main / Orchestrator]
-                WS_Endpoint[WebSocket Endpoint]
-            end
-
-            subgraph Actors [Ray Actors]
-                STT[STT Engine]
-                Agent[Langchain Agent]
-                TTS[TTS Engine]
-            end
-        end
-
-        subgraph Services [Inference Services]
-            %% Can be local (Ollama) or Cloud
-            LLM[LLM / Ollama] 
-            RAG[Vector DB]
-        end
-
-        %% Data Flow - Input
-        Microphone == Audio Stream ==> WS_Endpoint
-        WS_Endpoint -- 1. Raw Audio --> STT
-        STT -- 2. Transcription --> WS_Endpoint
-
-        %% Data Flow - Reasoning
-        WS_Endpoint -- 3. Text --> Agent
-        Agent <-->|Inference| LLM
-        Agent <-->|Context| RAG
-        
-        %% Tooling / Side Effects
-        Agent -.->|Tool Call HTTP| RobotControl
-
-        %% Data Flow - Output
-        Agent -- 4. Token Stream --> WS_Endpoint
-        WS_Endpoint -- 5. Text Chunks --> TTS
-        TTS -- 6. Audio Bytes --> WS_Endpoint
-        WS_Endpoint == Audio Stream ==> Speakers
-```
-
-
-
-
-Client (WebSocket) --> Orchestrator(STT Engine --> (full transcription) Langchain Agent --> (real time token stream) TTS Engine) --> (websocket) Client (Audio Stream)
-the langchain agent can also call api endpoints of the client to trigger actions on the client side like displaying content on the display, or triggering the camera in the head.
